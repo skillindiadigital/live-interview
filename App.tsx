@@ -76,11 +76,11 @@ export default function App() {
 
   const processCapturedAudio = useCallback(async () => {
     // Take a snapshot of the current audio chunks and then clear the main buffer
-    // for the next recording.
     const audioChunks = [...audioDataRef.current];
     audioDataRef.current = [];
 
-    if (audioChunks.length === 0) return;
+    // Filter out very short audio bursts (less than 1s usually implies noise)
+    if (audioChunks.length < 3) return; 
 
     let newEntryId = -1;
     const historyForContext = history
@@ -93,7 +93,7 @@ export default function App() {
         return [...prev, { id: newEntryId, question: 'Detecting question...', answer: '', isThinking: true }];
     });
 
-    setStatusText("Question detected! Generating answer...");
+    setStatusText("Processing audio...");
     
     const mimeType = mediaRecorderRef.current?.mimeType || 'audio/webm';
     const audioBlob = new Blob(audioChunks, { type: mimeType });
@@ -104,18 +104,26 @@ export default function App() {
       try {
         const base64data = (reader.result as string).split(',')[1];
         const { question, answer } = await getGeminiAnswerFromAudio(base64data, mimeType, historyForContext);
-        setHistory(prev => prev.map(item => item.id === newEntryId ? { ...item, question, answer, isThinking: false } : item));
+        
+        // If the API returns "..." it means it didn't hear a question. 
+        // We remove the entry to keep the UI clean.
+        if (question === "..." || question === "NO_AUDIO") {
+             setHistory(prev => prev.filter(item => item.id !== newEntryId));
+             setStatusText(isSharingRef.current ? "Listening for questions..." : "Session ended");
+        } else {
+             setHistory(prev => prev.map(item => item.id === newEntryId ? { ...item, question, answer, isThinking: false } : item));
+             setStatusText(isSharingRef.current ? "Listening for questions..." : "Session ended");
+        }
+
       } catch (err) {
         console.error("Error in processAudio/Gemini call:", err);
-        setHistory(prev => prev.map(item => item.id === newEntryId ? { ...item, question: "Processing Error", answer: "Could not get an answer from the AI.", isThinking: false } : item));
-      } finally {
-        setStatusText(isSharingRef.current ? "Listening for questions..." : "Session ended");
-      }
+        // Remove the entry on error too
+        setHistory(prev => prev.filter(item => item.id !== newEntryId));
+      } 
     };
     reader.onerror = (err) => {
         console.error("FileReader error:", err);
-        setError("Failed to process audio data.");
-        setHistory(prev => prev.map(item => item.id === newEntryId ? { ...item, question: "Audio Processing Error", answer: "Could not read audio data.", isThinking: false } : item));
+        setHistory(prev => prev.filter(item => item.id !== newEntryId));
     }
   }, [history]); 
 
@@ -185,14 +193,14 @@ export default function App() {
       const analyser = audioContext.createAnalyser();
       
       analyser.fftSize = 512;
-      analyser.minDecibels = -60;
-      analyser.smoothingTimeConstant = 0.6;
+      analyser.minDecibels = -50; // slightly reduced sensitivity
+      analyser.smoothingTimeConstant = 0.8; // smoother analysis
       source.connect(analyser);
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       let isSpeaking = false;
-      const SILENCE_DELAY = 1800; // Increased delay for more natural pauses
-      const SPEAKING_THRESHOLD = 20; // Increased threshold to avoid background noise
+      const SILENCE_DELAY = 2500; // INCREASED: Wait 2.5s of silence before processing (prevents cutting off mid-sentence)
+      const SPEAKING_THRESHOLD = 30; // INCREASED: Higher threshold to ignore background hum
 
       const VOICE_FREQ_MIN = 300;
       const VOICE_FREQ_MAX = 3400;
@@ -219,7 +227,7 @@ export default function App() {
         if (voiceAvg > SPEAKING_THRESHOLD) {
             if (!isSpeaking) {
                 isSpeaking = true;
-                // Recorder is already running, no action needed
+                // Recorder is already running
             }
             if (silenceTimerRef.current) {
                 clearTimeout(silenceTimerRef.current);
@@ -243,9 +251,9 @@ export default function App() {
           cleanup();
       };
       
-      // Start recording immediately and continuously
+      // Start recording immediately
       audioDataRef.current = [];
-      recorder.start(200);
+      recorder.start(100);
 
     } catch (err: any) {
       console.error("Error starting screen share:", err);
@@ -284,14 +292,14 @@ export default function App() {
                         <h3 className="font-bold text-lg">How it works:</h3>
                         <p className="text-sm">1. Click "Start Session" and share your meeting tab.</p>
                         <p className="text-sm">2. **Crucially**, enable the "Share tab audio" option.</p>
-                        <p className="text-sm">3. When a question is asked and followed by a pause, the AI will automatically generate an answer.</p>
+                        <p className="text-sm">3. The AI will wait for a 3-second silence before answering.</p>
                     </div>
                 </div>
             </div>
           ) : (
             <div className="flex flex-col items-center space-y-4 text-center">
                 <h2 className="text-2xl font-semibold text-slate-200">{isSharing ? "Session Active" : "Session Ended"}</h2>
-                <p className="text-slate-400">{isSharing ? "The co-pilot is listening to your shared tab audio." : "Review the log below or start a new session."}</p>
+                <p className="text-slate-400">{isSharing ? "Listening for questions..." : "Review the log below or start a new session."}</p>
                  {!isSharing && history.length > 0 && (
                      <button
                         onClick={startSharing}

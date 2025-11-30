@@ -103,37 +103,38 @@ export const getGeminiAnswerFromAudio = async (audioBase64: string, mimeType: st
 
   const historyContext = history.length > 0 ? `
 --- CONVERSATION HISTORY ---
-The following is the history of the conversation so far. Use it as context to inform your next answer, especially for follow-up questions.
-${history.map(entry => `Question: ${entry.question}\nYour Answer: ${entry.answer}`).join('\n---\n')}
+Use this history ONLY for context. Do not repeat previous questions.
+${history.map(entry => `Interviewer: ${entry.question}\nYou: ${entry.answer}`).join('\n')}
 --- END CONVERSATION HISTORY ---
 ` : '';
 
-  const promptInstruction = `You are an expert Senior O&M Engineer and technical consultant helping a candidate (Shivashish Shukla) ace a live interview.
+  const promptInstruction = `
+  **CRITICAL INSTRUCTION: TRANSCRIPTION & VALIDATION FIRST**
+  You are an AI assistant helping a candidate (Shivashish Shukla) in a live interview.
+  
+  **STEP 1: AUDIO ANALYSIS (MOST IMPORTANT)**
+  1. Listen to the provided audio carefully.
+  2. **Is there a clear question or command directed at the candidate?**
+     - If the audio is silence, background noise, typing sounds, or someone mumbling: **RETURN "NO_AUDIO"**.
+     - If the audio is just a statement (e.g., "Okay", "Right", "Next"): **RETURN "NO_AUDIO"**.
+     - **DO NOT HALLUCINATE:** Do not invent a question if you don't hear one clearly. It is better to return nothing than to answer a fake question.
 
-${cvData}
---- END CV ---
+  **STEP 2: ANSWER GENERATION (Only if Step 1 is valid)**
+  If a clear question is detected, generate an answer acting as **Shivashish Shukla** (Senior O&M Engineer).
+  
+  **Source of Knowledge:**
+  - **Personal/Experience Qs:** STRICTLY use the provided CV below.
+  - **Technical/Engineering Qs:** Use your expert general knowledge (Solar, Electrical, SCADA, O&M) to provide a high-quality, detailed technical answer.
 
-${historyContext}
+  ${cvData}
+  --- END CV ---
 
-**YOUR ROLE & INSTRUCTIONS:**
-1.  **Identity:** You are acting as the candidate, Shivashish Shukla. You are a Senior Engineer with deep expertise in Electrical Engineering, Solar Power Plants, and Operations & Maintenance.
-2.  **Source of Knowledge (CRITICAL):**
-    *   **For Personal/Experience Questions (e.g., "Where did you work?", "Tell me about yourself"):** STRICTLY use the provided CV. Do not invent jobs or dates.
-    *   **For Technical/Conceptual Questions (e.g., "How does an inverter work?", "Explain RCA", "What is power factor?"):** DO NOT limit yourself to the CV. Use your EXTENSIVE internal database of engineering knowledge. Answer as a world-class subject matter expert. Provide detailed, technically accurate, and practical answers even if the specific concept isn't written in the CV.
-    *   **For Behavioral/Formal Questions:** Answer professionally using standard corporate etiquette (e.g., STAR method for situational questions).
+  ${historyContext}
 
-3.  **Output Format:**
-    *   You MUST respond in valid JSON: \`{ "question": "transcribed question", "answer": "your response" }\`.
-    *   If no clear question is heard in the audio, return "..." for both fields.
-
-4.  **Tone & Style:**
-    *   **Language:**
-        *   If asked in Hindi: Answer in **Hinglish** (Professional Hindi + English technical terms).
-        *   If asked in English: Answer in **Professional English**.
-    *   **Structure:** Be direct and high-impact. Start with the core concept, then explain the 'Why' and 'How'. Use bullet points implied in speech (e.g., "There are three key reasons...").
-    *   **Confidence:** Speak with authority. Do not say "The CV doesn't mention this." Instead, say "From an engineering perspective, the answer is..."
-
-5.  **Task:** Listen to the audio input, transcribe the question, and generate the best possible answer to get the job.
+  **OUTPUT FORMAT:**
+  Return ONLY valid JSON.
+  If invalid audio: { "question": "NO_AUDIO", "answer": "..." }
+  If valid question: { "question": "Transcribed question exactly as heard", "answer": "Your professional, concise, spoken-style answer." }
 `;
 
   try {
@@ -168,6 +169,7 @@ ${historyContext}
     // Safely handle potentially undefined text
     let jsonString = response.text ? response.text.trim() : "";
     
+    // Clean up markdown code blocks if present
     if (jsonString.startsWith('```json')) {
         jsonString = jsonString.substring(7, jsonString.length - 3).trim();
     } else if (jsonString.startsWith('```')) {
@@ -179,15 +181,21 @@ ${historyContext}
     }
 
     const jsonResponse = JSON.parse(jsonString);
+    
+    // Filter out invalid or hallucinated responses based on the strict prompt instructions
+    if (jsonResponse.question === "NO_AUDIO" || jsonResponse.question === "..." || !jsonResponse.question) {
+        return { question: "...", answer: "..." };
+    }
+
     return {
-        question: jsonResponse.question || "...",
+        question: jsonResponse.question,
         answer: jsonResponse.answer || "Sorry, I couldn't generate an answer.",
     };
   } catch (error) {
     console.error("Error processing Gemini response:", error);
     return {
-        question: "Could not transcribe the question.",
-        answer: "Sorry, I couldn't process the audio. Please try again.",
+        question: "...",
+        answer: "...",
     };
   }
 };
