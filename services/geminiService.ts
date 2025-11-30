@@ -37,7 +37,8 @@ function floatTo16BitPCM(input: Float32Array): Int16Array {
 }
 
 // Helper to encode ArrayBuffer to Base64
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
+// FIXED: Changed type to ArrayBufferLike to accept Int16Array.buffer
+function arrayBufferToBase64(buffer: ArrayBufferLike): string {
     let binary = '';
     const bytes = new Uint8Array(buffer);
     const len = bytes.byteLength;
@@ -67,8 +68,8 @@ export class LiveInterviewSession {
                 model: 'gemini-2.5-flash-native-audio-preview-09-2025',
                 config: {
                     responseModalities: [Modality.AUDIO], // We must request AUDIO for Live API
-                    inputAudioTranscription: { model: "gemini-2.5-flash-native-audio-preview-09-2025" }, // Enable input transcription
-                    outputAudioTranscription: { model: "gemini-2.5-flash-native-audio-preview-09-2025" }, // Enable output transcription
+                    inputAudioTranscription: {}, // Enable input transcription (default model)
+                    outputAudioTranscription: {}, // Enable output transcription (default model)
                     systemInstruction: `
                     You are an expert AI Job Interview Co-Pilot assisting Shivashish Shukla.
                     
