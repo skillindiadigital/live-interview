@@ -37,7 +37,6 @@ function floatTo16BitPCM(input: Float32Array): Int16Array {
 }
 
 // Helper to encode ArrayBuffer to Base64
-// FIXED: Changed type to ArrayBufferLike to accept Int16Array.buffer
 function arrayBufferToBase64(buffer: ArrayBufferLike): string {
     let binary = '';
     const bytes = new Uint8Array(buffer);
@@ -76,16 +75,17 @@ export class LiveInterviewSession {
                     **YOUR GOAL:**
                     Listen to the interviewer's question and provide the BEST possible answer for Shivashish to say.
                     
-                    **RULES:**
+                    **CRITICAL INSTRUCTIONS FOR DETECTION:**
+                    1. **WAIT FOR 3-SECOND PAUSE:** The interviewer speaks slowly and takes long pauses. **DO NOT ANSWER** immediately after a brief silence. Wait for at least 3 seconds of silence or a clear, grammatically complete question before generating a response.
+                    2. **ASK FOR CLARIFICATION:** If the question is mumbled, incomplete, too short to understand, or cut off, **DO NOT HALLUCINATE** a question. Instead, output exactly: "Could you please repeat that question? I didn't hear it clearly."
+                    
+                    **ANSWERING RULES:**
                     1. **Source of Truth:**
                        - For personal/experience questions, use the CV strictly.
                        - For technical questions (Solar, Electrical, SCADA), use your expert general knowledge.
                     2. **Style:**
                        - Be professional, concise, and confident.
                        - Answer directly. Do not start with "Here is an answer". Just give the answer.
-                    3. **Behavior:**
-                       - If you hear silence or background noise, DO NOT GENERATE TEXT. Wait for a clear question.
-                       - If the user is just typing or mumbling, stay silent.
                     
                     ${cvData}
                     `,
@@ -145,8 +145,6 @@ export class LiveInterviewSession {
 
     disconnect() {
         if (this.currentSession) {
-             // Close isn't explicitly exposed on the session object in all versions, 
-             // but releasing the client ends it.
              this.currentSession = null;
         }
     }

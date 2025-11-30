@@ -18,11 +18,27 @@ const StatusIndicator: React.FC<{ icon: React.ReactNode; text: string; color: st
   </div>
 );
 
+// Volume Meter Component
+const VolumeMeter: React.FC<{ volume: number }> = ({ volume }) => {
+    // Volume is 0 to 1 (normalized roughly)
+    const widthPercentage = Math.min(100, Math.max(0, volume * 500)); 
+    
+    return (
+        <div className="w-full bg-slate-700 rounded-full h-2.5 mt-2 overflow-hidden">
+            <div 
+                className={`h-2.5 rounded-full transition-all duration-75 ${widthPercentage > 5 ? 'bg-green-500' : 'bg-slate-600'}`} 
+                style={{ width: `${widthPercentage}%` }}
+            ></div>
+        </div>
+    );
+};
+
 export default function App() {
   const [isSharing, setIsSharing] = useState(false);
   const [statusText, setStatusText] = useState("Session not started");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [currentVolume, setCurrentVolume] = useState(0);
   
   // Refs for audio handling
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -61,6 +77,7 @@ export default function App() {
     setIsSharing(false);
     setStatusText("Session ended.");
     currentEntryIdRef.current = null;
+    setCurrentVolume(0);
   }, []);
 
   const handleInputTranscript = useCallback((text: string) => {
@@ -153,6 +170,16 @@ export default function App() {
         processor.onaudioprocess = (e) => {
             if (!liveSessionRef.current) return;
             const inputData = e.inputBuffer.getChannelData(0);
+            
+            // Calculate Volume for UI
+            let sum = 0;
+            for (let i = 0; i < inputData.length; i++) {
+                sum += inputData[i] * inputData[i];
+            }
+            const rms = Math.sqrt(sum / inputData.length);
+            // Throttle state update slightly to avoid performance hit
+            if (Math.random() > 0.8) setCurrentVolume(rms);
+
             liveSessionRef.current.sendAudioChunk(inputData);
         };
 
@@ -170,7 +197,7 @@ export default function App() {
     <div className="bg-slate-900 text-white min-h-screen lg:h-screen lg:overflow-y-hidden font-sans flex flex-col">
       <header className="p-4 border-b border-slate-700 bg-slate-900/90 backdrop-blur-sm z-10">
         <h1 className="text-2xl font-bold text-center text-cyan-400 tracking-wide">
-          Live Interview Co-Pilot <span className="text-xs text-cyan-600 bg-cyan-900/30 px-2 py-1 rounded ml-2">V2.0 ULTRA-FAST</span>
+          Live Interview Co-Pilot <span className="text-xs text-cyan-600 bg-cyan-900/30 px-2 py-1 rounded ml-2">V2.1 SMART WAIT</span>
         </h1>
       </header>
 
@@ -195,7 +222,7 @@ export default function App() {
                         <h3 className="font-bold text-blue-300">Instructions:</h3>
                         <p className="text-sm">1. Click Start and share the <strong>Interviewer's Tab</strong>.</p>
                         <p className="text-sm">2. Check <strong>"Share tab audio"</strong> (Critical).</p>
-                        <p className="text-sm">3. The AI listens continuously. Questions appear instantly.</p>
+                        <p className="text-sm">3. The AI waits for a <strong>3-second pause</strong> before answering.</p>
                     </div>
                 </div>
             </div>
@@ -219,12 +246,22 @@ export default function App() {
                     <StatusIndicator 
                         icon={<MicIcon className="h-6 w-6" />} 
                         text={statusText} 
-                        color="text-green-400" 
-                        pulse={true} 
+                        color={currentVolume > 0.01 ? "text-green-400" : "text-yellow-500"} 
+                        pulse={currentVolume > 0.01} 
                     />
+                    
+                    {/* Visualizer */}
+                    <div className="bg-slate-900/60 p-4 rounded-lg border border-slate-700">
+                        <div className="flex justify-between text-xs text-slate-400 mb-1">
+                            <span>Audio Level</span>
+                            {currentVolume > 0.01 ? <span>Detecting Speech...</span> : <span>Waiting for 3s Pause...</span>}
+                        </div>
+                        <VolumeMeter volume={currentVolume} />
+                    </div>
+
                      <div className="p-4 rounded-lg bg-slate-900/50 border border-slate-700 text-center">
                         <p className="text-slate-400 text-sm">Mode</p>
-                        <p className="text-cyan-400 font-mono font-bold">Gemini 2.5 Live (WebSocket)</p>
+                        <p className="text-cyan-400 font-mono font-bold">Gemini 2.5 Live (Smart Wait)</p>
                      </div>
                 </div>
 
