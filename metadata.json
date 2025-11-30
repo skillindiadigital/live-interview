@@ -1,0 +1,7 @@
+{
+  "name": "Live Interview Co-Pilot",
+  "description": "An AI assistant that listens to your meeting audio via screen sharing and provides real-time answers to questions, helping you ace your live interviews with ultra-low latency responses.",
+  "requestFramePermissions": [
+    "display-capture"
+  ]
+}
