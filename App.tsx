@@ -1,13 +1,13 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { getGeminiAnswerFromAudio } from './services/geminiService';
-import { ScreenShareIcon, MicIcon, BrainIcon, InfoIcon } from './components/Icons';
+import { LiveInterviewSession } from './services/geminiService';
+import { ScreenShareIcon, MicIcon, BrainIcon, InfoIcon, StopIcon } from './components/Icons';
 
 type HistoryEntry = {
     id: number;
     question: string;
     answer: string;
-    isThinking: boolean;
+    isComplete: boolean;
 };
 
 // Helper component for displaying status
@@ -18,326 +18,271 @@ const StatusIndicator: React.FC<{ icon: React.ReactNode; text: string; color: st
   </div>
 );
 
-// Helper component for the answer display with a typing effect
-const AnswerDisplay: React.FC<{ answer: string; isThinking: boolean }> = ({ answer, isThinking }) => {
-  const [displayedAnswer, setDisplayedAnswer] = useState('');
-  
-  useEffect(() => {
-    if (isThinking) {
-      setDisplayedAnswer('');
-      return;
-    }
-
-    if (answer === displayedAnswer) return;
-
-    let i = 0;
-    const interval = setInterval(() => {
-      setDisplayedAnswer(answer.slice(0, i));
-      i++;
-      if (i > answer.length) {
-        clearInterval(interval);
-      }
-    }, 15); 
-    return () => clearInterval(interval);
-  }, [answer, isThinking]);
-  
-  return (
-    <div className="prose prose-invert prose-lg max-w-none text-slate-200">
-      {isThinking ? '...' : displayedAnswer}
-      {!isThinking && displayedAnswer.length > 0 && displayedAnswer.length === answer.length && <span className="inline-block w-1 h-6 bg-cyan-400 animate-ping ml-1"></span>}
-    </div>
-  );
-};
-const MemoizedAnswerDisplay = React.memo(AnswerDisplay);
-
-
-// Main App Component
 export default function App() {
   const [isSharing, setIsSharing] = useState(false);
   const [statusText, setStatusText] = useState("Session not started");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
-
-  const streamRef = useRef<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioDataRef = useRef<Blob[]>([]);
-  const silenceTimerRef = useRef<number | null>(null);
-  const historyEndRef = useRef<HTMLDivElement>(null);
   
-  const isThinkingRef = useRef(false);
-  const isSharingRef = useRef(isSharing);
+  // Refs for audio handling
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const liveSessionRef = useRef<LiveInterviewSession | null>(null);
+  
+  // Refs for current turn state (to avoid excessive React renders)
+  const currentEntryIdRef = useRef<number | null>(null);
+  const historyEndRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { 
-      isThinkingRef.current = history.some(h => h.isThinking);
-      isSharingRef.current = isSharing;
-      historyEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [history, isSharing]);
-
-  const processCapturedAudio = useCallback(async () => {
-    // Take a snapshot of the current audio chunks and then clear the main buffer
-    const audioChunks = [...audioDataRef.current];
-    audioDataRef.current = [];
-
-    // Filter out very short audio bursts (less than 1s usually implies noise)
-    if (audioChunks.length < 3) return; 
-
-    let newEntryId = -1;
-    const historyForContext = history
-        .filter(entry => !entry.isThinking && entry.question && entry.answer && entry.question !== "..." && entry.question !== "Detecting question...")
-        .map(({ question, answer }) => ({ question, answer }));
-
-
-    setHistory(prev => {
-        newEntryId = prev.length > 0 ? prev[prev.length - 1].id + 1 : 0;
-        return [...prev, { id: newEntryId, question: 'Detecting question...', answer: '', isThinking: true }];
-    });
-
-    setStatusText("Processing audio...");
-    
-    const mimeType = mediaRecorderRef.current?.mimeType || 'audio/webm';
-    const audioBlob = new Blob(audioChunks, { type: mimeType });
-
-    const reader = new FileReader();
-    reader.readAsDataURL(audioBlob);
-    reader.onloadend = async () => {
-      try {
-        const base64data = (reader.result as string).split(',')[1];
-        const { question, answer } = await getGeminiAnswerFromAudio(base64data, mimeType, historyForContext);
-        
-        // If the API returns "..." it means it didn't hear a question. 
-        // We remove the entry to keep the UI clean.
-        if (question === "..." || question === "NO_AUDIO") {
-             setHistory(prev => prev.filter(item => item.id !== newEntryId));
-             setStatusText(isSharingRef.current ? "Listening for questions..." : "Session ended");
-        } else {
-             setHistory(prev => prev.map(item => item.id === newEntryId ? { ...item, question, answer, isThinking: false } : item));
-             setStatusText(isSharingRef.current ? "Listening for questions..." : "Session ended");
-        }
-
-      } catch (err) {
-        console.error("Error in processAudio/Gemini call:", err);
-        // Remove the entry on error too
-        setHistory(prev => prev.filter(item => item.id !== newEntryId));
-      } 
-    };
-    reader.onerror = (err) => {
-        console.error("FileReader error:", err);
-        setHistory(prev => prev.filter(item => item.id !== newEntryId));
-    }
-  }, [history]); 
-
-  const processAudioRef = useRef(processCapturedAudio);
   useEffect(() => {
-    processAudioRef.current = processCapturedAudio;
-  }, [processCapturedAudio]);
-
+    historyEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [history]);
 
   const cleanup = useCallback(() => {
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.stop();
+    if (scriptProcessorRef.current) {
+        scriptProcessorRef.current.disconnect();
+        scriptProcessorRef.current = null;
     }
-    mediaRecorderRef.current = null;
-    
-    if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-    }
-
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
         audioContextRef.current.close();
     }
     audioContextRef.current = null;
 
+    if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+    }
+
+    if (liveSessionRef.current) {
+        liveSessionRef.current.disconnect();
+        liveSessionRef.current = null;
+    }
+
     setIsSharing(false);
-    setStatusText("Session ended. Start new session to clear log.");
-    setError(null);
+    setStatusText("Session ended.");
+    currentEntryIdRef.current = null;
+  }, []);
+
+  const handleInputTranscript = useCallback((text: string) => {
+    setHistory(prev => {
+        const id = currentEntryIdRef.current;
+        if (id === null) {
+            // New turn starting
+            const newId = Date.now();
+            currentEntryIdRef.current = newId;
+            return [...prev, { id: newId, question: text, answer: '', isComplete: false }];
+        } else {
+            // Update existing turn
+            return prev.map(entry => entry.id === id ? { ...entry, question: entry.question + text } : entry);
+        }
+    });
+  }, []);
+
+  const handleOutputTranscript = useCallback((text: string) => {
+    setHistory(prev => {
+        const id = currentEntryIdRef.current;
+        if (id === null) return prev; // Should not happen if input came first, but strictly safer
+        return prev.map(entry => entry.id === id ? { ...entry, answer: entry.answer + text } : entry);
+    });
+  }, []);
+
+  const handleTurnComplete = useCallback(() => {
+     setHistory(prev => {
+         const id = currentEntryIdRef.current;
+         if (id !== null) {
+             return prev.map(entry => entry.id === id ? { ...entry, isComplete: true } : entry);
+         }
+         return prev;
+     });
+     currentEntryIdRef.current = null; // Ready for next question
   }, []);
 
   const startSharing = useCallback(async () => {
     setHistory([]);
     setError(null);
-    
+    setStatusText("Initializing...");
+
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
-      });
+        // 1. Initialize Gemini Live Session
+        const session = new LiveInterviewSession({
+            onInputTranscript: handleInputTranscript,
+            onOutputTranscript: handleOutputTranscript,
+            onTurnComplete: handleTurnComplete,
+            onError: (err) => setError(`Gemini Error: ${err}`),
+            onClose: () => {
+                if (isSharing) cleanup();
+            }
+        });
+        await session.connect();
+        liveSessionRef.current = session;
 
-      const audioTracks = stream.getAudioTracks();
-      if (audioTracks.length === 0) {
-        setError("No audio track found. Please share your tab with 'Tab audio' enabled.");
-        stream.getTracks().forEach(track => track.stop());
-        return;
-      }
+        // 2. Start Screen Share
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: true, // Crucial
+        });
 
-      streamRef.current = stream;
-      setIsSharing(true);
-      setStatusText("Listening for questions...");
-      
-      const audioStream = new MediaStream(audioTracks);
-
-      const options = { mimeType: 'audio/webm;codecs=opus' };
-      const recorder = new MediaRecorder(audioStream, options);
-      mediaRecorderRef.current = recorder;
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioDataRef.current.push(event.data);
-      };
-
-      const audioContext = new AudioContext();
-      audioContextRef.current = audioContext;
-      const source = audioContext.createMediaStreamSource(audioStream);
-      const analyser = audioContext.createAnalyser();
-      
-      analyser.fftSize = 512;
-      analyser.minDecibels = -50; // slightly reduced sensitivity
-      analyser.smoothingTimeConstant = 0.8; // smoother analysis
-      source.connect(analyser);
-
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      let isSpeaking = false;
-      const SILENCE_DELAY = 2500; // INCREASED: Wait 2.5s of silence before processing (prevents cutting off mid-sentence)
-      const SPEAKING_THRESHOLD = 30; // INCREASED: Higher threshold to ignore background hum
-
-      const VOICE_FREQ_MIN = 300;
-      const VOICE_FREQ_MAX = 3400;
-      const sampleRate = audioContext.sampleRate;
-      const minBinIndex = Math.ceil(VOICE_FREQ_MIN / (sampleRate / analyser.fftSize));
-      const maxBinIndex = Math.floor(VOICE_FREQ_MAX / (sampleRate / analyser.fftSize));
-      
-      const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-      analyser.connect(scriptProcessor);
-      scriptProcessor.connect(audioContext.destination);
-
-      scriptProcessor.onaudioprocess = () => {
-        if (!isSharingRef.current) {
-            scriptProcessor.disconnect();
+        // Check for audio track
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            setError("No audio detected! Please share a Tab and check 'Share tab audio'.");
+            stream.getTracks().forEach(t => t.stop());
             return;
         }
 
-        analyser.getByteFrequencyData(dataArray);
+        streamRef.current = stream;
         
-        const voiceBins = dataArray.slice(minBinIndex, maxBinIndex);
-        const voiceSum = voiceBins.reduce((a, b) => a + b, 0);
-        const voiceAvg = voiceSum / (maxBinIndex - minBinIndex);
+        // Handle stream stop (user clicks "Stop Sharing" in browser UI)
+        stream.getVideoTracks()[0].onended = () => {
+            cleanup();
+        };
 
-        if (voiceAvg > SPEAKING_THRESHOLD) {
-            if (!isSpeaking) {
-                isSpeaking = true;
-                // Recorder is already running
-            }
-            if (silenceTimerRef.current) {
-                clearTimeout(silenceTimerRef.current);
-                silenceTimerRef.current = null;
-            }
-        } else {
-            if (isSpeaking) {
-                if (!silenceTimerRef.current && !isThinkingRef.current) {
-                    silenceTimerRef.current = window.setTimeout(() => {
-                        isSpeaking = false;
-                        processAudioRef.current();
-                        silenceTimerRef.current = null;
-                    }, SILENCE_DELAY);
-                }
-            }
-        }
-      };
-      
-      stream.getVideoTracks()[0].onended = () => {
-          scriptProcessor.onaudioprocess = null;
-          cleanup();
-      };
-      
-      // Start recording immediately
-      audioDataRef.current = [];
-      recorder.start(100);
+        // 3. Audio Pipeline Setup
+        // We use 16kHz context because Gemini Live prefers 16kHz PCM
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+        audioContextRef.current = audioContext;
+
+        const source = audioContext.createMediaStreamSource(stream);
+        // ScriptProcessor is deprecated but reliable for simple raw PCM access in this context
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        scriptProcessorRef.current = processor;
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+
+        processor.onaudioprocess = (e) => {
+            if (!liveSessionRef.current) return;
+            const inputData = e.inputBuffer.getChannelData(0);
+            liveSessionRef.current.sendAudioChunk(inputData);
+        };
+
+        setIsSharing(true);
+        setStatusText("Live & Listening...");
 
     } catch (err: any) {
-      console.error("Error starting screen share:", err);
-      if (err.name === 'NotAllowedError') {
-        setError("Permission to share screen was denied.");
-      } else {
-        setError("Could not start screen sharing.");
-      }
-      cleanup();
+        console.error("Start Error:", err);
+        setError(err.message || "Failed to start session.");
+        cleanup();
     }
-  }, [cleanup]);
-
+  }, [cleanup, handleInputTranscript, handleOutputTranscript, handleTurnComplete]);
 
   return (
     <div className="bg-slate-900 text-white min-h-screen lg:h-screen lg:overflow-y-hidden font-sans flex flex-col">
-      <header className="p-4 border-b border-slate-700">
-        <h1 className="text-2xl font-bold text-center text-cyan-400">
-          Live Interview Co-Pilot
+      <header className="p-4 border-b border-slate-700 bg-slate-900/90 backdrop-blur-sm z-10">
+        <h1 className="text-2xl font-bold text-center text-cyan-400 tracking-wide">
+          Live Interview Co-Pilot <span className="text-xs text-cyan-600 bg-cyan-900/30 px-2 py-1 rounded ml-2">V2.0 ULTRA-FAST</span>
         </h1>
       </header>
 
       <main className="flex-grow p-4 md:p-8 grid grid-cols-1 lg:grid-cols-2 gap-8 items-start lg:min-h-0">
-        <div className="flex flex-col space-y-6 bg-slate-800 p-6 rounded-xl shadow-lg h-full">
-          {!isSharing && history.length === 0 ? (
-             <div className="flex flex-col items-center space-y-6">
+        {/* Controls Panel */}
+        <div className="flex flex-col space-y-6 bg-slate-800 p-6 rounded-xl shadow-xl border border-slate-700 h-full">
+          {!isSharing ? (
+             <div className="flex flex-col items-center justify-center flex-grow space-y-8">
+                <div className="bg-slate-900/50 p-6 rounded-full">
+                    <BrainIcon className="h-20 w-20 text-cyan-500 animate-pulse" />
+                </div>
                 <button
                     onClick={startSharing}
-                    className="flex items-center space-x-3 px-8 py-4 bg-cyan-500 text-slate-900 font-bold rounded-full text-xl hover:bg-cyan-400 transition-all duration-300 transform hover:scale-105 shadow-lg"
+                    className="flex items-center space-x-4 px-10 py-5 bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-bold rounded-full text-xl hover:from-cyan-500 hover:to-blue-500 transition-all duration-300 transform hover:scale-105 shadow-2xl hover:shadow-cyan-500/20"
                 >
                     <ScreenShareIcon className="h-8 w-8" />
-                    <span>Start Session</span>
+                    <span>Start Live Session</span>
                 </button>
-                 <div className="flex items-start space-x-3 p-4 rounded-lg bg-blue-900/50 border border-blue-700 text-blue-200">
-                    <InfoIcon className="h-10 w-10 flex-shrink-0 mt-1" />
-                    <div>
-                        <h3 className="font-bold text-lg">How it works:</h3>
-                        <p className="text-sm">1. Click "Start Session" and share your meeting tab.</p>
-                        <p className="text-sm">2. **Crucially**, enable the "Share tab audio" option.</p>
-                        <p className="text-sm">3. The AI will wait for a 3-second silence before answering.</p>
+                 <div className="flex items-start space-x-3 p-5 rounded-lg bg-blue-900/30 border border-blue-700/50 text-blue-200 max-w-md">
+                    <InfoIcon className="h-6 w-6 flex-shrink-0 mt-1 text-blue-400" />
+                    <div className="space-y-2">
+                        <h3 className="font-bold text-blue-300">Instructions:</h3>
+                        <p className="text-sm">1. Click Start and share the <strong>Interviewer's Tab</strong>.</p>
+                        <p className="text-sm">2. Check <strong>"Share tab audio"</strong> (Critical).</p>
+                        <p className="text-sm">3. The AI listens continuously. Questions appear instantly.</p>
                     </div>
                 </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center space-y-4 text-center">
-                <h2 className="text-2xl font-semibold text-slate-200">{isSharing ? "Session Active" : "Session Ended"}</h2>
-                <p className="text-slate-400">{isSharing ? "Listening for questions..." : "Review the log below or start a new session."}</p>
-                 {!isSharing && history.length > 0 && (
-                     <button
-                        onClick={startSharing}
-                        className="flex items-center space-x-3 px-6 py-3 mt-4 bg-cyan-600 text-slate-900 font-bold rounded-full text-lg hover:bg-cyan-500 transition-all duration-300 transform hover:scale-105 shadow-md"
+            <div className="flex flex-col h-full">
+                <div className="flex flex-col items-center space-y-6 mb-8">
+                    <div className="relative">
+                        <div className="absolute inset-0 bg-green-500 blur-xl opacity-20 animate-pulse rounded-full"></div>
+                        <h2 className="relative text-3xl font-bold text-white tracking-tight">Session Active</h2>
+                    </div>
+                    <button
+                        onClick={cleanup}
+                        className="flex items-center space-x-2 px-6 py-2 bg-red-600/20 text-red-400 border border-red-600/50 font-semibold rounded-lg hover:bg-red-600 hover:text-white transition-all"
                     >
-                        <ScreenShareIcon className="h-6 w-6" />
-                        <span>Start New Session</span>
+                        <StopIcon className="h-5 w-5" />
+                        <span>Stop Session</span>
                     </button>
-                 )}
+                </div>
+
+                <div className="space-y-4">
+                    <StatusIndicator 
+                        icon={<MicIcon className="h-6 w-6" />} 
+                        text={statusText} 
+                        color="text-green-400" 
+                        pulse={true} 
+                    />
+                     <div className="p-4 rounded-lg bg-slate-900/50 border border-slate-700 text-center">
+                        <p className="text-slate-400 text-sm">Mode</p>
+                        <p className="text-cyan-400 font-mono font-bold">Gemini 2.5 Live (WebSocket)</p>
+                     </div>
+                </div>
+
+                {error && (
+                    <div className="mt-auto p-4 bg-red-900/80 border border-red-700 text-white rounded-lg animate-fade-in">
+                        <strong>Error:</strong> {error}
+                    </div>
+                )}
             </div>
           )}
-
-          <div className="space-y-4">
-            <StatusIndicator icon={<MicIcon className="h-6 w-6" />} text={statusText} color={isSharing ? "text-green-400" : "text-slate-400"} />
-            <StatusIndicator icon={<BrainIcon className="h-6 w-6" />} text={isThinkingRef.current ? "Generating Answer..." : "Standing By"} color={isThinkingRef.current ? "text-purple-400" : "text-slate-400"} pulse={isThinkingRef.current} />
-          </div>
-
-          {error && <div className="text-red-400 bg-red-900/50 p-3 rounded-lg mt-auto">{error}</div>}
         </div>
 
-        <div className="bg-slate-800 p-6 rounded-xl shadow-lg h-full min-h-[400px] flex flex-col">
-          <h2 className="text-3xl font-bold mb-4 text-cyan-400 border-b-2 border-cyan-500/30 pb-2">Co-Pilot Log</h2>
-          <div className="flex-grow overflow-y-auto pr-2 space-y-6">
-            {history.length === 0 && (
-                <div className="flex items-center justify-center h-full text-slate-500">
-                    <p>Generated answers will appear here...</p>
+        {/* Live Transcript Log */}
+        <div className="bg-slate-800 p-0 rounded-xl shadow-xl border border-slate-700 h-full min-h-[500px] flex flex-col overflow-hidden">
+          <div className="p-4 border-b border-slate-700 bg-slate-800/90 backdrop-blur z-10 flex justify-between items-center">
+             <h2 className="text-xl font-bold text-cyan-400 flex items-center">
+                <div className="w-2 h-2 rounded-full bg-cyan-500 mr-2 animate-ping"></div>
+                Live Transcript
+             </h2>
+             <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Real-time</span>
+          </div>
+          
+          <div className="flex-grow overflow-y-auto p-6 space-y-6 bg-slate-900/30">
+            {history.length === 0 && isSharing && (
+                <div className="flex flex-col items-center justify-center h-full text-slate-500 animate-pulse">
+                    <p>Listening for audio...</p>
                 </div>
             )}
+            {history.length === 0 && !isSharing && (
+                <div className="flex items-center justify-center h-full text-slate-600">
+                    <p>Transcript will appear here</p>
+                </div>
+            )}
+            
             {history.map((entry) => (
-                <div key={entry.id}>
-                    {entry.question && !entry.isThinking && entry.question !== "..." && (
-                        <div className="mb-4 p-4 bg-slate-700/50 rounded-lg">
-                            <h3 className="text-lg font-semibold text-slate-400 mb-1">Detected Question:</h3>
-                            <p className="text-slate-300 italic">"{entry.question}"</p>
+                <div key={entry.id} className="animate-fade-in-up">
+                    {/* Interviewer Question */}
+                    <div className="flex justify-end mb-2">
+                         <div className="max-w-[85%] bg-slate-700 rounded-2xl rounded-tr-none px-5 py-3 border border-slate-600">
+                            <p className="text-xs text-slate-400 mb-1 font-bold uppercase tracking-wide">Interviewer</p>
+                            <p className="text-slate-200 text-lg leading-relaxed">{entry.question}</p>
+                         </div>
+                    </div>
+
+                    {/* AI Answer */}
+                    <div className="flex justify-start mb-6">
+                        <div className="max-w-[90%] bg-gradient-to-br from-cyan-900/40 to-blue-900/40 rounded-2xl rounded-tl-none px-6 py-4 border border-cyan-800/30 shadow-lg">
+                            <div className="flex items-center space-x-2 mb-2">
+                                <BrainIcon className="h-4 w-4 text-cyan-400" />
+                                <p className="text-xs text-cyan-400 font-bold uppercase tracking-wide">Suggestion</p>
+                            </div>
+                            <div className="prose prose-invert prose-lg max-w-none">
+                                <p className="text-slate-100 leading-relaxed font-medium">
+                                    {entry.answer}
+                                    {!entry.isComplete && <span className="inline-block w-1.5 h-4 ml-1 bg-cyan-400 animate-pulse"/>}
+                                </p>
+                            </div>
                         </div>
-                    )}
-                    <div className="mt-2 text-xl leading-relaxed">
-                        <MemoizedAnswerDisplay answer={entry.answer} isThinking={entry.isThinking} />
                     </div>
                 </div>
             ))}

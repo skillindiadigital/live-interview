@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
 
 const API_KEY = process.env.API_KEY;
 
@@ -10,192 +10,143 @@ if (!API_KEY) {
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 const cvData = `
-
 --- CANDIDATE CV: Shivashish Shukla ---
-
 **Role:** Senior O&M Engineer – Solar Power Plants
-
-**Objective:**
-A highly skilled O&M Engineer with extensive experience in the operation and maintenance of Solar power plants, CBM well sites, and electrical systems. Strong in troubleshooting, preventive, predictive, and reactive maintenance strategies. Seeking a challenging role in a forward-thinking organization focused on operational excellence. :contentReference[oaicite:0]{index=0}
-
-**Contact Details:**
-- **Mobile:** +91-9826252004, +91-9479200351 :contentReference[oaicite:1]{index=1}
-- **Email:** shivashishshukla01@gmail.com :contentReference[oaicite:2]{index=2}
-- **Permanent Address:** Gram Post-Atraila-15, Vaya Katra, District-Rewa, Madhya Pradesh :contentReference[oaicite:3]{index=3}
-
----
-
-**Work Experience:**
-
-- **Senior O&M Engineer** (Nov-2023 – Present)
-  - Electro Solaire Pvt. Ltd. | 154 MW DC / 100 MW AC, GIPCL (Block-D), Raghanesda, Gujarat
-  - SCADA‐based monitoring, RCA implementation, thermography & I-V curve diagnostics, MIS reporting, safety & IMS compliance. :contentReference[oaicite:4]{index=4}
-
-- **Associate Officer – O&M** (Sept-2022 – Nov-2023)
-  - PowerSun India Pvt. Ltd. | GIPCL (Block-B), Raghanesda
-  - Breakdown handling, preventive checks, spare management, JSA analysis, hazard assessment. :contentReference[oaicite:5]{index=5}
-
-- **Engineer – O&M** (Nov-2021 – Aug-2022)
-  - Shri Sai Electrical | GIPCL (Block-B), Raghanesda
-  - SCADA monitoring, RCA reporting, thermography, coordination with GIPCL officials. :contentReference[oaicite:6]{index=6}
-
-- **Operation Engineer** (Oct-2020 – Nov-2021)
-  - Shivo-Hum India Pvt. Ltd. | Reliance CBM E&P
-  - Well integrity, gas production optimization, pump flushing, pressure surveys, control system troubleshooting. :contentReference[oaicite:7]{index=7}
-
----
-
+**Objective:** Highly skilled O&M Engineer (Solar, CBM, Electrical). Strong in troubleshooting, SCADA, RCA.
+**Experience:**
+- **Senior O&M Engineer** (Nov-2023–Present): Electro Solaire Pvt. Ltd. (154 MW DC). SCADA, RCA, Thermography, MIS.
+- **Associate Officer** (Sept-2022–Nov-2023): PowerSun India. Breakdown handling, JSA.
+- **Engineer** (Nov-2021–Aug-2022): Shri Sai Electrical. SCADA, RCA.
+- **Operation Engineer** (Oct-2020–Nov-2021): Shivo-Hum India. CBM well sites, gas production.
 **Education:**
-- M.Tech in Electrical Engineering (Power System & Control)
-  - Vishwavidyalaya Engineering College, Ambikapur | 75.40% (2020)
-- B.E. in Electrical Engineering
-  - Vishwavidyalaya Engineering College, Lakhanpur | 71.40% (2018)
-- Diploma in Electrical Engineering
-  - Government Polytechnic Korea | 68.02% (2014)
-- 10th | CGBSE Raipur | 72.67% (2011) :contentReference[oaicite:8]{index=8}
-
----
-
-**Publications:**
-- Development of Tensor Product-Based Dynamic Phasor Estimation Algorithm – IJERA, Aug 2020
-- Potential of Phasor Estimation Algorithm Using Tensor Product – IJERA, July 2020 :contentReference[oaicite:9]{index=9}
-
----
-
-**Key Skills:**
-- Solar O&M • SCADA Monitoring • MIS Reporting • RCA & Zero-Breakdown Method
-- Predictive / Preventive Maintenance
-- Safety: JSA | HIRA | IMS Documentation
-- Strong problem-solving • Team leadership • SOP awareness :contentReference[oaicite:10]{index=10}
-
-**Software Skills:**
-- MS Excel • MS Word • MS PowerPoint :contentReference[oaicite:11]{index=11}
-
----
-
-**Personal Information:**
-- **Name:** Shivashish Shukla
-- **D.O.B:** 02-Jul-1996
-- **Father’s Name:** Shri Bhoopendra Narayan Shukla
-- **Religion:** Hindu
-- **Nationality:** Indian
-- **Marital Status:** Unmarried
-- **Languages:** Hindi, English :contentReference[oaicite:12]{index=12}
-
----
-
-**Declaration:**
-I certify that the above information is true and correct to the best of my knowledge. :contentReference[oaicite:13]{index=13}
-
-(Signature)
-Shivashish Shukla
+- M.Tech Electrical (Power System & Control) - 75.40%
+- B.E. Electrical - 71.40%
+**Skills:** Solar O&M, SCADA, RCA, SAP, IMS, Safety (JSA/HIRA), Predictive Maintenance.
+**Personal:** Shivashish Shukla, DOB: 02-Jul-1996, Rewa (MP).
+--- END CV ---
 `;
 
-type HistoryItem = {
-    question: string;
-    answer: string;
+// Helper to convert Float32Array to 16-bit PCM for Gemini
+function floatTo16BitPCM(input: Float32Array): Int16Array {
+    const output = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) {
+        const s = Math.max(-1, Math.min(1, input[i]));
+        output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return output;
+}
+
+// Helper to encode ArrayBuffer to Base64
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+export type LiveSessionCallbacks = {
+    onInputTranscript: (text: string) => void;
+    onOutputTranscript: (text: string) => void;
+    onTurnComplete: () => void;
+    onError: (error: string) => void;
+    onClose: () => void;
 };
 
-export const getGeminiAnswerFromAudio = async (audioBase64: string, mimeType: string, history: HistoryItem[]): Promise<{ question: string; answer: string; }> => {
-  if (!audioBase64) {
-    return { question: "...", answer: "..." };
-  }
+export class LiveInterviewSession {
+    private sessionPromise: Promise<any> | null = null;
+    private currentSession: any = null;
 
-  const historyContext = history.length > 0 ? `
---- CONVERSATION HISTORY ---
-Use this history ONLY for context. Do not repeat previous questions.
-${history.map(entry => `Interviewer: ${entry.question}\nYou: ${entry.answer}`).join('\n')}
---- END CONVERSATION HISTORY ---
-` : '';
+    constructor(private callbacks: LiveSessionCallbacks) {}
 
-  const promptInstruction = `
-  **CRITICAL INSTRUCTION: TRANSCRIPTION & VALIDATION FIRST**
-  You are an AI assistant helping a candidate (Shivashish Shukla) in a live interview.
-  
-  **STEP 1: AUDIO ANALYSIS (MOST IMPORTANT)**
-  1. Listen to the provided audio carefully.
-  2. **Is there a clear question or command directed at the candidate?**
-     - If the audio is silence, background noise, typing sounds, or someone mumbling: **RETURN "NO_AUDIO"**.
-     - If the audio is just a statement (e.g., "Okay", "Right", "Next"): **RETURN "NO_AUDIO"**.
-     - **DO NOT HALLUCINATE:** Do not invent a question if you don't hear one clearly. It is better to return nothing than to answer a fake question.
+    async connect() {
+        try {
+            this.sessionPromise = ai.live.connect({
+                model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+                config: {
+                    responseModalities: [Modality.AUDIO], // We must request AUDIO for Live API
+                    inputAudioTranscription: { model: "gemini-2.5-flash-native-audio-preview-09-2025" }, // Enable input transcription
+                    outputAudioTranscription: { model: "gemini-2.5-flash-native-audio-preview-09-2025" }, // Enable output transcription
+                    systemInstruction: `
+                    You are an expert AI Job Interview Co-Pilot assisting Shivashish Shukla.
+                    
+                    **YOUR GOAL:**
+                    Listen to the interviewer's question and provide the BEST possible answer for Shivashish to say.
+                    
+                    **RULES:**
+                    1. **Source of Truth:**
+                       - For personal/experience questions, use the CV strictly.
+                       - For technical questions (Solar, Electrical, SCADA), use your expert general knowledge.
+                    2. **Style:**
+                       - Be professional, concise, and confident.
+                       - Answer directly. Do not start with "Here is an answer". Just give the answer.
+                    3. **Behavior:**
+                       - If you hear silence or background noise, DO NOT GENERATE TEXT. Wait for a clear question.
+                       - If the user is just typing or mumbling, stay silent.
+                    
+                    ${cvData}
+                    `,
+                },
+                callbacks: {
+                    onopen: () => {
+                        console.log("Gemini Live Session Connected");
+                    },
+                    onmessage: (message: LiveServerMessage) => {
+                        // 1. Handle Input Transcription (Interviewer)
+                        if (message.serverContent?.inputTranscription) {
+                            const text = message.serverContent.inputTranscription.text;
+                            if (text) this.callbacks.onInputTranscript(text);
+                        }
 
-  **STEP 2: ANSWER GENERATION (Only if Step 1 is valid)**
-  If a clear question is detected, generate an answer acting as **Shivashish Shukla** (Senior O&M Engineer).
-  
-  **Source of Knowledge:**
-  - **Personal/Experience Qs:** STRICTLY use the provided CV below.
-  - **Technical/Engineering Qs:** Use your expert general knowledge (Solar, Electrical, SCADA, O&M) to provide a high-quality, detailed technical answer.
+                        // 2. Handle Output Transcription (The Answer)
+                        if (message.serverContent?.outputTranscription) {
+                            const text = message.serverContent.outputTranscription.text;
+                            if (text) this.callbacks.onOutputTranscript(text);
+                        }
 
-  ${cvData}
-  --- END CV ---
+                        // 3. Handle Turn Completion
+                        if (message.serverContent?.turnComplete) {
+                            this.callbacks.onTurnComplete();
+                        }
+                    },
+                    onclose: () => {
+                        console.log("Gemini Live Session Closed");
+                        this.callbacks.onClose();
+                    },
+                    onerror: (e: any) => {
+                        console.error("Gemini Live Session Error", e);
+                        this.callbacks.onError(e.message || "Connection error");
+                    }
+                }
+            });
 
-  ${historyContext}
-
-  **OUTPUT FORMAT:**
-  Return ONLY valid JSON.
-  If invalid audio: { "question": "NO_AUDIO", "answer": "..." }
-  If valid question: { "question": "Transcribed question exactly as heard", "answer": "Your professional, concise, spoken-style answer." }
-`;
-
-  try {
-    const audioPart = {
-      inlineData: {
-        mimeType,
-        data: audioBase64,
-      },
-    };
-
-    const textPart = {
-      text: promptInstruction,
-    };
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: { parts: [textPart, audioPart] },
-      config: {
-        thinkingConfig: { thinkingBudget: 0 },
-        responseMimeType: "application/json",
-        responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-                question: { type: Type.STRING },
-                answer: { type: Type.STRING },
-            },
-            required: ["question", "answer"],
-        },
-      },
-    });
-    
-    // Safely handle potentially undefined text
-    let jsonString = response.text ? response.text.trim() : "";
-    
-    // Clean up markdown code blocks if present
-    if (jsonString.startsWith('```json')) {
-        jsonString = jsonString.substring(7, jsonString.length - 3).trim();
-    } else if (jsonString.startsWith('```')) {
-        jsonString = jsonString.substring(3, jsonString.length - 3).trim();
+            this.currentSession = await this.sessionPromise;
+        } catch (error: any) {
+            this.callbacks.onError(error.message);
+        }
     }
 
-    if (!jsonString) {
-        throw new Error("Received empty response from AI");
+    sendAudioChunk(float32Data: Float32Array) {
+        if (!this.currentSession) return;
+
+        const pcm16 = floatTo16BitPCM(float32Data);
+        const base64Data = arrayBufferToBase64(pcm16.buffer);
+
+        this.currentSession.sendRealtimeInput({
+            media: {
+                mimeType: "audio/pcm;rate=16000",
+                data: base64Data
+            }
+        });
     }
 
-    const jsonResponse = JSON.parse(jsonString);
-    
-    // Filter out invalid or hallucinated responses based on the strict prompt instructions
-    if (jsonResponse.question === "NO_AUDIO" || jsonResponse.question === "..." || !jsonResponse.question) {
-        return { question: "...", answer: "..." };
+    disconnect() {
+        if (this.currentSession) {
+             // Close isn't explicitly exposed on the session object in all versions, 
+             // but releasing the client ends it.
+             this.currentSession = null;
+        }
     }
-
-    return {
-        question: jsonResponse.question,
-        answer: jsonResponse.answer || "Sorry, I couldn't generate an answer.",
-    };
-  } catch (error) {
-    console.error("Error processing Gemini response:", error);
-    return {
-        question: "...",
-        answer: "...",
-    };
-  }
-};
+}
