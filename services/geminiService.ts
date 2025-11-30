@@ -170,11 +170,17 @@ When generating the "answer" field, you must embody the persona of Bapi Biswas w
       },
     });
     
-    let jsonString = response.text.trim();
+    // Safely handle potentially undefined text
+    let jsonString = response.text ? response.text.trim() : "";
+    
     if (jsonString.startsWith('```json')) {
         jsonString = jsonString.substring(7, jsonString.length - 3).trim();
     } else if (jsonString.startsWith('```')) {
         jsonString = jsonString.substring(3, jsonString.length - 3).trim();
+    }
+
+    if (!jsonString) {
+        throw new Error("Received empty response from AI");
     }
 
     const jsonResponse = JSON.parse(jsonString);
